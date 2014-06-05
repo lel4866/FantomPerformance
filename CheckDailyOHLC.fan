@@ -1,6 +1,6 @@
 using [java] java.lang
 
-final class Main {
+final class CheckDailyOHLC {
     const static Str sSymbol := "RUT"
     const static Str sBaseDir := "/Users/" + System.getProperty("user.name") + "/"
     const static Str sIBDataDir := sBaseDir + "IBData/"
@@ -12,7 +12,7 @@ final class Main {
 
     static sys::Void main(Str[] args) {
         start_time := Duration.now
-        Main main := Main()
+        CheckDailyOHLC main := CheckDailyOHLC()
         main.run()
         end_time := Duration.now
         elapsed_time := (end_time - start_time).toMillis
