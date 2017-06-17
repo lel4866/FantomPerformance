@@ -1,129 +1,109 @@
-import java.time.LocalDate
-import java.util.HashMap
 import java.io.File
-import kotlin.util.measureTimeMillis
-import java.time.format.DateTimeFormatter
-import java.time.LocalTime
-import java.text.DecimalFormat
+import java.math.BigDecimal
+import java.text.SimpleDateFormat
+import java.util.*
+import kotlin.system.measureTimeMillis
 
 fun main(args: Array<String>) {
     val elapsedTime = measureTimeMillis { CheckDailyOHLC().run() }
     println("CheckDailyOHLC elapsed time is $elapsedTime milliseconds")
 }
 
-class Bar() {
-    var date: LocalDate = LocalDate.MIN
-    var open: Double = 0.0
-    var high: Double = 0.0
-    var low: Double = 0.0
-    var close: Double = 0.0
-}
+class Bar(var date: Date = Date(0L), var open: BigDecimal = BigDecimal.ZERO,
+          var high: BigDecimal = open, var low: BigDecimal = open, var close: BigDecimal = open)
 
-class CheckDailyOHLC() {
-    class object {
-        val sSymbol = "RUT"
-        val sBaseDir = "C:/Users/" + System.getProperty("user.name") + "/"
-        val sIBDataDir = sBaseDir + "IBData/"
-        val sYahooFilePath = sIBDataDir + sSymbol + "/rut.csv"
-        val sInDir = sIBDataDir + sSymbol + "/"
-        val sInFilePattern = sSymbol + "_\\d{8,8}[.]txt"
+class CheckDailyOHLC {
+    companion object {
+        const val sSymbol = "RUT"
+        val sBaseDir = "${System.getProperty("user.home")}/"
+        val sIBDataDir = "${sBaseDir}IBData/"
+        val sYahooFilePath = "$sIBDataDir$sSymbol/rut.csv"
+        val sInDir = "$sIBDataDir$sSymbol/"
+        val sInFileRegex = Regex(sSymbol + "_\\d{8,8}[.]txt")
+
+        val sYahooFileDateFormat = SimpleDateFormat("M/d/y", Locale.getDefault())
+        val sIBFileNameDateFormat = SimpleDateFormat("yyyyMMdd", Locale.getDefault())
+        val sIBFileDateFormat = SimpleDateFormat("MM/dd/yyyy", Locale.getDefault())
     }
 
-    val yahooBars = HashMap<LocalDate, Bar>()
+    val yahooBars = mutableMapOf<Date, Bar>()
 
     fun run() {
         val yahooFile = File(sYahooFilePath)
-        if (!yahooFile.exists()) {
-            println("*** Error: Yahoo data file $sYahooFilePath does not exist")
-            return
-        }
+        check(yahooFile.exists()) { "*** Error: Yahoo data file $sYahooFilePath does not exist" }
 
         // add Yahoo data to yahooBars
-        yahooFile.forEachLineWithLinenum { line, line_no ->
-            if (line_no > 0) {
+        yahooFile.useLines {
+            lines ->
+            // skip header line
+            lines.drop(1).forEachIndexed { line_no, line ->
                 val fields = line.split(',')
                 if (fields.size > 4) {
-                    var yahooBar = Bar()
-                    yahooBar.date = LocalDate.parse(fields[0], DateTimeFormatter.ofPattern("M/d/y")) ?: LocalDate.MIN
-                    yahooBar.open = fields[1].toDouble()
-                    yahooBar.high = fields[2].toDouble()
-                    yahooBar.low = fields[3].toDouble()
-                    yahooBar.close = fields[4].toDouble()
-                    yahooBars.put(yahooBar.date, yahooBar)
+                    val yahooBar = Bar(
+                            date = sYahooFileDateFormat.parse(fields[0]),
+                            open = BigDecimal(fields[1]),
+                            high = BigDecimal(fields[2]),
+                            low = BigDecimal(fields[3]),
+                            close = BigDecimal(fields[4])
+                    )
+                    yahooBars[yahooBar.date] = yahooBar
                 } else
                     println("*** Error: Line $line_no of daily yahoo data")
             }
         }
 
         // read 5sec data from IBData directory and get daily OHLC from each file
-        val ib_files = File(sInDir).listFiles { it.isFile() && it.name.matches(sInFilePattern) }
-        if (ib_files == null || ib_files.isEmpty()) {
-            println("*** Error: no iB data files in $sInDir")
-            return
-        }
+        val ib_files = File(sInDir).listFiles { file -> file.isFile && file.name matches sInFileRegex }
+        check(ib_files != null && ib_files.isNotEmpty()) { "*** Error: no iB data files in $sInDir" }
+        ib_files.sort()
 
-        var ohlcBar = Bar()
+        val ohlcBar = Bar()
         ib_files.forEach { file ->
-            val ibFilename = file.getName()
-            println("Processing " + ibFilename + "...")
-            val sFileDate = ibFilename.substring(sSymbol.length() + 1, sSymbol.length() + 9)
-            val fileDate = ldParse(sFileDate, DateTimeFormatter.BASIC_ISO_DATE)
-            file.forEachLineWithLinenum @lit {(line, line_no): Unit ->
-                val fields = line.split(',')
-                if (fields.size < 3) {
-                    println("*** Error: Too few fields. Line $line_no of $ibFilename")
-                    return@lit
+            val ibFilename = file.name
+            println("Processing $ibFilename...")
+            val sFileDate = ibFilename.substring(sSymbol.length + 1, sSymbol.length + 9)
+            val fileDate = sIBFileNameDateFormat.parse(sFileDate)
+            file.useLines {
+                lines ->
+                lines.forEachIndexed lit@ { line_no, line ->
+                    val fields = line.split(',')
+                    if (fields.size < 3) {
+                        println("*** Error: Too few fields. Line $line_no of $ibFilename")
+                        return@lit
+                    }
+
+                    ohlcBar.date = sIBFileDateFormat.parse(fields[0])
+                    if (ohlcBar.date != fileDate) {
+                        println("*** Error: line date not same as file date in line $line_no of $ibFilename")
+                        return@lit
+                    }
+
+                    val price = BigDecimal(fields[2])
+                    ohlcBar.close = price
+                    if (line_no == 0) {
+                        ohlcBar.open = price
+                        ohlcBar.high = price
+                        ohlcBar.low = price
+                    } else {
+                        if (price > ohlcBar.high)
+                            ohlcBar.high = price
+                        else if (price < ohlcBar.low)
+                            ohlcBar.low = price
+                    }
                 }
-
-                ohlcBar.date = LocalDate.parse(fields[0], DateTimeFormatter.ofPattern("M/d/y")) ?: LocalDate.MIN
-                if (ohlcBar.date != fileDate) {
-                    println("*** Error: line date not same as file date in line $line_no of $ibFilename")
-                    return@lit
-                }
-
-                // ignore lines before 9:30am
-                val tickTime = LocalTime.parse(fields[1], DateTimeFormatter.ISO_LOCAL_TIME) ?: LocalTime.MIDNIGHT
-                if (tickTime.isBefore(LocalTime.of(9, 30)))
-                    return@lit
-
-                ohlcBar.close = java.lang.Double.parseDouble(fields[2])
-                if (line_no == 1L) {
-                    ohlcBar.open = ohlcBar.close
-                    ohlcBar.high = ohlcBar.close
-                    ohlcBar.low = ohlcBar.close
-                    return@lit
-                }
-
-                if (ohlcBar.close > ohlcBar.high)
-                    ohlcBar.high = ohlcBar.close
-                else if (ohlcBar.close < ohlcBar.low)
-                    ohlcBar.low = ohlcBar.close
             }
 
-            // now compare IB bars with yahooBras
+            // now compare IB bars with yahooBars
+            val sDate = sIBFileDateFormat.format(ohlcBar.date)
             val yahooBar = yahooBars[ohlcBar.date]
-            val sDate = ohlcBar.date.format(DateTimeFormatter.BASIC_ISO_DATE)
             if (yahooBar != null) {
                 val opendiff = yahooBar.open - ohlcBar.open
                 val highdiff = yahooBar.high - ohlcBar.high
                 val lowdiff = yahooBar.low - ohlcBar.low
                 val closediff = yahooBar.close - ohlcBar.close
-                val formatter = DecimalFormat("#0.00")
-                println(sDate + ": opendiff=" + formatter.format(opendiff) + " highdiff=" + formatter.format(highdiff) + " lowdiff=" + formatter.format(lowdiff) + " closediff=" + formatter.format(closediff))
-            }
-            else
-                println("yahoo file does not contain entry for ib file of date " + sDate)
+                println("$sDate: opendiff=$opendiff highdiff=$highdiff lowdiff=$lowdiff closediff=$closediff")
+            } else
+                println("yahoo file does not contain entry for ib file of date $sDate")
         }
     }
 }
-
-fun File.forEachLineWithLinenum(block: (String, Long) -> Unit): Unit {
-    var __line_no = 0L
-    forEachLine { block(it, __line_no++) }
-}
-
-fun ldParse(dateString: String, dtf : DateTimeFormatter?=DateTimeFormatter.ISO_LOCAL_DATE): LocalDate {
-    return LocalDate.parse(dateString, dtf) ?: LocalDate.MIN
-}
-
-fun Double.fmtDec(digitsToRightOfDec: Int = 2) = java.lang.String.format("%.${digitsToRightOfDec}f", this)
